@@ -29,17 +29,18 @@ const LivenessDetector = () => {
     try {
       setError(null);
       
-      // Dynamically import MediaPipe libraries
-      const [{ FaceDetection }, { Camera }] = await Promise.all([
-        import('@mediapipe/face_detection'),
-        import('@mediapipe/camera_utils')
-      ]);
+      // Load MediaPipe libraries from CDN to avoid bundling issues
+      const faceDetectionModule = await import('https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/face_detection.js');
+      const cameraModule = await import('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js');
       
-      console.log('MediaPipe libraries loaded successfully');
+      console.log('MediaPipe libraries loaded successfully from CDN');
+      
+      const FaceDetection = faceDetectionModule.FaceDetection;
+      const Camera = cameraModule.Camera;
       
       const faceDetection = new FaceDetection({
         locateFile: (file: string) => {
-          return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`;
+          return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/${file}`;
         }
       });
 
