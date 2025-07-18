@@ -1,6 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { FaceDetection } from '@mediapipe/face_detection';
-import { Camera } from '@mediapipe/camera_utils';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -14,11 +12,19 @@ interface Detection {
   timestamp: number;
 }
 
+// Declare global MediaPipe types
+declare global {
+  interface Window {
+    FaceDetection: any;
+    Camera: any;
+  }
+}
+
 const LivenessDetector = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const faceDetectionRef = useRef<FaceDetection | null>(null);
-  const cameraRef = useRef<Camera | null>(null);
+  const faceDetectionRef = useRef<any>(null);
+  const cameraRef = useRef<any>(null);
   
   const [isInitialized, setIsInitialized] = useState(false);
   const [currentOrientation, setCurrentOrientation] = useState<FaceOrientation>('none');
@@ -33,9 +39,14 @@ const LivenessDetector = () => {
       
       console.log('Initializing MediaPipe...');
       
-      const faceDetection = new FaceDetection({
-        locateFile: (file) => {
-          return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`;
+      // Wait for MediaPipe to be available globally
+      if (!window.FaceDetection || !window.Camera) {
+        throw new Error('MediaPipe libraries not loaded. Please refresh the page.');
+      }
+      
+      const faceDetection = new window.FaceDetection({
+        locateFile: (file: string) => {
+          return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/${file}`;
         }
       });
 
@@ -44,14 +55,14 @@ const LivenessDetector = () => {
         minDetectionConfidence: 0.5,
       });
 
-      faceDetection.onResults((results) => {
+      faceDetection.onResults((results: any) => {
         onResults(results);
       });
 
       faceDetectionRef.current = faceDetection;
 
       if (videoRef.current) {
-        const camera = new Camera(videoRef.current, {
+        const camera = new window.Camera(videoRef.current, {
           onFrame: async () => {
             if (faceDetectionRef.current && videoRef.current) {
               await faceDetectionRef.current.send({ image: videoRef.current });

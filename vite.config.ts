@@ -22,12 +22,7 @@ export default defineConfig(({ mode }) => ({
   },
   build: {
     rollupOptions: {
-      external: mode === 'production' ? [] : [],
-      output: {
-        manualChunks: {
-          mediapipe: ['@mediapipe/face_detection', '@mediapipe/camera_utils']
-        }
-      }
+      external: ['@mediapipe/face_detection', '@mediapipe/camera_utils']
     }
   }
 }));
