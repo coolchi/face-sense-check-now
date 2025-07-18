@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { FaceDetection } from '@mediapipe/face_detection';
+import { Camera } from '@mediapipe/camera_utils';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -15,8 +17,8 @@ interface Detection {
 const LivenessDetector = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const faceDetectionRef = useRef<any>(null);
-  const cameraRef = useRef<any>(null);
+  const faceDetectionRef = useRef<FaceDetection | null>(null);
+  const cameraRef = useRef<Camera | null>(null);
   
   const [isInitialized, setIsInitialized] = useState(false);
   const [currentOrientation, setCurrentOrientation] = useState<FaceOrientation>('none');
@@ -29,18 +31,11 @@ const LivenessDetector = () => {
     try {
       setError(null);
       
-      // Load MediaPipe libraries from CDN to avoid bundling issues
-      const faceDetectionModule = await import('https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/face_detection.js');
-      const cameraModule = await import('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js');
-      
-      console.log('MediaPipe libraries loaded successfully from CDN');
-      
-      const FaceDetection = faceDetectionModule.FaceDetection;
-      const Camera = cameraModule.Camera;
+      console.log('Initializing MediaPipe...');
       
       const faceDetection = new FaceDetection({
-        locateFile: (file: string) => {
-          return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/${file}`;
+        locateFile: (file) => {
+          return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`;
         }
       });
 
@@ -49,7 +44,7 @@ const LivenessDetector = () => {
         minDetectionConfidence: 0.5,
       });
 
-      faceDetection.onResults((results: any) => {
+      faceDetection.onResults((results) => {
         onResults(results);
       });
 
@@ -70,6 +65,7 @@ const LivenessDetector = () => {
         await camera.start();
         setIsInitialized(true);
         setIsDetecting(true);
+        console.log('MediaPipe initialized successfully');
       }
     } catch (err) {
       console.error('Error initializing MediaPipe:', err);

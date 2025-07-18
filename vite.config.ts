@@ -20,4 +20,14 @@ export default defineConfig(({ mode }) => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    rollupOptions: {
+      external: mode === 'production' ? [] : [],
+      output: {
+        manualChunks: {
+          mediapipe: ['@mediapipe/face_detection', '@mediapipe/camera_utils']
+        }
+      }
+    }
+  }
 }));
