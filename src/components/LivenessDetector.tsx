@@ -1,6 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { FaceDetection } from '@mediapipe/face_detection';
-import { Camera } from '@mediapipe/camera_utils';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -17,8 +15,8 @@ interface Detection {
 const LivenessDetector = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const faceDetectionRef = useRef<FaceDetection | null>(null);
-  const cameraRef = useRef<Camera | null>(null);
+  const faceDetectionRef = useRef<any>(null);
+  const cameraRef = useRef<any>(null);
   
   const [isInitialized, setIsInitialized] = useState(false);
   const [currentOrientation, setCurrentOrientation] = useState<FaceOrientation>('none');
@@ -31,8 +29,16 @@ const LivenessDetector = () => {
     try {
       setError(null);
       
+      // Dynamically import MediaPipe libraries
+      const [{ FaceDetection }, { Camera }] = await Promise.all([
+        import('@mediapipe/face_detection'),
+        import('@mediapipe/camera_utils')
+      ]);
+      
+      console.log('MediaPipe libraries loaded successfully');
+      
       const faceDetection = new FaceDetection({
-        locateFile: (file) => {
+        locateFile: (file: string) => {
           return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`;
         }
       });
@@ -42,7 +48,7 @@ const LivenessDetector = () => {
         minDetectionConfidence: 0.5,
       });
 
-      faceDetection.onResults((results) => {
+      faceDetection.onResults((results: any) => {
         onResults(results);
       });
 
@@ -66,7 +72,7 @@ const LivenessDetector = () => {
       }
     } catch (err) {
       console.error('Error initializing MediaPipe:', err);
-      setError('Failed to initialize camera and face detection. Please check your camera permissions.');
+      setError(`Failed to initialize camera and face detection: ${err instanceof Error ? err.message : 'Unknown error'}. Please check your camera permissions and try again.`);
     }
   };
 
