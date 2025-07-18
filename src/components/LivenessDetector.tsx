@@ -1,5 +1,6 @@
-
 import { useEffect, useRef, useState } from 'react';
+import { FaceDetection } from '@mediapipe/face_detection';
+import { Camera } from '@mediapipe/camera_utils';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -10,14 +11,14 @@ type FaceOrientation = 'straight' | 'left' | 'right' | 'none';
 interface Detection {
   orientation: FaceOrientation;
   confidence: number;
-  timestamp: Date;
+  timestamp: number;
 }
 
 const LivenessDetector = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const faceDetectionRef = useRef<FaceDetection | null>(null);
+  const cameraRef = useRef<Camera | null>(null);
   
   const [isInitialized, setIsInitialized] = useState(false);
   const [currentOrientation, setCurrentOrientation] = useState<FaceOrientation>('none');
@@ -26,345 +27,130 @@ const LivenessDetector = () => {
   const [detectionHistory, setDetectionHistory] = useState<Detection[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const initializeCamera = async () => {
+  const initializeMediaPipe = async () => {
     try {
       setError(null);
       
-      // Get user media
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          facingMode: 'user'
+      const faceDetection = new FaceDetection({
+        locateFile: (file) => {
+          return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`;
         }
       });
 
+      faceDetection.setOptions({
+        model: 'short',
+        minDetectionConfidence: 0.5,
+      });
+
+      faceDetection.onResults((results) => {
+        onResults(results);
+      });
+
+      faceDetectionRef.current = faceDetection;
+
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        streamRef.current = stream;
-        
-        videoRef.current.onloadedmetadata = () => {
-          if (videoRef.current) {
-            videoRef.current.play();
-            setIsInitialized(true);
-            setIsDetecting(true);
-            startDetection();
-          }
-        };
+        const camera = new Camera(videoRef.current, {
+          onFrame: async () => {
+            if (faceDetectionRef.current && videoRef.current) {
+              await faceDetectionRef.current.send({ image: videoRef.current });
+            }
+          },
+          width: 640,
+          height: 480
+        });
+
+        cameraRef.current = camera;
+        await camera.start();
+        setIsInitialized(true);
+        setIsDetecting(true);
       }
     } catch (err) {
-      console.error('Error accessing camera:', err);
-      setError('Failed to access camera. Please check your camera permissions and try again.');
+      console.error('Error initializing MediaPipe:', err);
+      setError('Failed to initialize camera and face detection. Please check your camera permissions.');
     }
   };
 
-  const startDetection = () => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-    }
+  const onResults = (results: any) => {
+    if (!canvasRef.current) return;
 
-    intervalRef.current = setInterval(() => {
-      detectFace();
-    }, 100); // Detect every 100ms
-  };
-
-  const detectFace = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
-
-    const video = videoRef.current;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Clear canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    if (!ctx || video.videoWidth === 0) return;
-
-    // Set canvas dimensions to match video
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-
-    // Draw video frame to canvas
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    // Simple face detection using basic image processing
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const faceDetected = detectFaceInImageData(imageData, ctx);
-    
-    if (!faceDetected) {
-      setCurrentOrientation('none');
-      setConfidence(0);
+    // Draw video frame
+    if (videoRef.current) {
+      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
     }
-  };
 
-  const detectFaceInImageData = (imageData: ImageData, ctx: CanvasRenderingContext2D): boolean => {
-    const data = imageData.data;
-    const width = imageData.width;
-    const height = imageData.height;
-    
-    // Enhanced face detection with multiple algorithms
-    const skinPixels: Array<{x: number, y: number, intensity: number}> = [];
-    const faceFeatures: Array<{x: number, y: number, confidence: number}> = [];
-    
-    // Multi-pass detection for better accuracy
-    
-    // Pass 1: Enhanced skin color detection with lighting adaptation
-    for (let y = 0; y < height; y += 2) {
-      for (let x = 0; x < width; x += 2) {
-        const index = (y * width + x) * 4;
-        const r = data[index];
-        const g = data[index + 1];
-        const b = data[index + 2];
+    if (results.detections && results.detections.length > 0) {
+      const detection = results.detections[0];
+      const landmarks = detection.landmarks;
+      
+      if (landmarks && landmarks.length >= 6) {
+        // Calculate face orientation based on key landmarks
+        const nose = landmarks[2]; // Nose tip
+        const leftEye = landmarks[0]; // Left eye
+        const rightEye = landmarks[1]; // Right eye
         
-        const skinConfidence = getSkinColorConfidence(r, g, b);
-        if (skinConfidence > 0.3) {
-          skinPixels.push({x, y, intensity: skinConfidence});
+        // Ensure all required landmarks exist
+        if (nose && leftEye && rightEye && nose.x !== undefined && leftEye.x !== undefined && rightEye.x !== undefined) {
+          // Calculate horizontal position of nose relative to eye center
+          const eyeCenter = (leftEye.x + rightEye.x) / 2;
+          const noseX = nose.x;
+          
+          // Determine orientation based on nose position relative to eye center
+          let orientation: FaceOrientation = 'straight';
+          const threshold = 0.02; // Sensitivity threshold
+          
+          if (noseX < eyeCenter - threshold) {
+            orientation = 'right'; // Person's right (our left when looking at them)
+          } else if (noseX > eyeCenter + threshold) {
+            orientation = 'left'; // Person's left (our right when looking at them)
+          }
+          
+          const detectionConfidence = (detection.score && detection.score[0]) ? detection.score[0] : 0;
+        
+          setCurrentOrientation(orientation);
+          setConfidence(detectionConfidence);
+        
+          // Add to detection history
+          const newDetection: Detection = {
+            orientation,
+            confidence: detectionConfidence,
+            timestamp: Date.now()
+          };
+          
+          setDetectionHistory(prev => [...prev.slice(-9), newDetection]);
+          
+          // Draw face detection box
+          const bbox = detection.boundingBox;
+          if (bbox) {
+            ctx.strokeStyle = orientation === 'straight' ? '#10b981' : '#3b82f6';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(
+              bbox.xCenter * canvas.width - (bbox.width * canvas.width) / 2,
+              bbox.yCenter * canvas.height - (bbox.height * canvas.height) / 2,
+              bbox.width * canvas.width,
+              bbox.height * canvas.height
+            );
+          }
+          
+          // Draw landmarks
+          ctx.fillStyle = '#ef4444';
+          landmarks.forEach((landmark: any) => {
+            ctx.beginPath();
+            ctx.arc(landmark.x * canvas.width, landmark.y * canvas.height, 3, 0, 2 * Math.PI);
+            ctx.fill();
+          });
         }
       }
-    }
-    
-    if (skinPixels.length < 50) {
+    } else {
       setCurrentOrientation('none');
       setConfidence(0);
-      return false;
     }
-    
-    // Pass 2: Cluster analysis for face region detection
-    const clusters = clusterSkinPixels(skinPixels, width, height);
-    const primaryCluster = clusters.find(cluster => cluster.pixels.length > 100);
-    
-    if (!primaryCluster) {
-      setCurrentOrientation('none');
-      setConfidence(0);
-      return false;
-    }
-    
-    // Pass 3: Face feature detection within the primary cluster
-    const faceRegion = primaryCluster;
-    const centerX = faceRegion.centerX;
-    const centerY = faceRegion.centerY;
-    
-    // Pass 4: Enhanced orientation detection using multiple cues
-    const orientation = detectFaceOrientation(faceRegion, data, width, height);
-    const detectionConfidence = Math.min(faceRegion.confidence, 1);
-    
-    // Temporal smoothing for stability
-    const smoothedOrientation = temporalSmoothing(orientation, detectionConfidence);
-    
-    setCurrentOrientation(smoothedOrientation.orientation);
-    setConfidence(smoothedOrientation.confidence);
-    
-    // Add to detection history
-    const newDetection: Detection = {
-      orientation: smoothedOrientation.orientation,
-      confidence: smoothedOrientation.confidence,
-      timestamp: new Date()
-    };
-    
-    setDetectionHistory(prev => [...prev.slice(-9), newDetection]);
-    
-    // Enhanced visualization
-    drawFaceDetection(ctx, centerX, centerY, faceRegion.width, faceRegion.height, smoothedOrientation.orientation);
-    
-    return true;
-  };
-
-  const getSkinColorConfidence = (r: number, g: number, b: number): number => {
-    // Multiple skin color models for better accuracy
-    
-    // Model 1: RGB-based detection
-    const rgbScore = (r > 95 && g > 40 && b > 20 && 
-                     Math.max(r, g, b) - Math.min(r, g, b) > 15 && 
-                     Math.abs(r - g) > 15 && r > g && r > b) ? 0.8 : 0;
-    
-    // Model 2: YCbCr color space
-    const y = 0.299 * r + 0.587 * g + 0.114 * b;
-    const cb = -0.169 * r - 0.331 * g + 0.5 * b + 128;
-    const cr = 0.5 * r - 0.419 * g - 0.081 * b + 128;
-    
-    const ycbcrScore = (y > 80 && cb >= 77 && cb <= 127 && cr >= 133 && cr <= 173) ? 0.9 : 0;
-    
-    // Model 3: HSV-based detection
-    const max = Math.max(r, g, b);
-    const min = Math.min(r, g, b);
-    const v = max / 255;
-    const s = max === 0 ? 0 : (max - min) / max;
-    
-    let h = 0;
-    if (max !== min) {
-      switch (max) {
-        case r: h = ((g - b) / (max - min)) * 60; break;
-        case g: h = (2 + (b - r) / (max - min)) * 60; break;
-        case b: h = (4 + (r - g) / (max - min)) * 60; break;
-      }
-    }
-    if (h < 0) h += 360;
-    
-    const hsvScore = (h >= 0 && h <= 50 && s >= 0.23 && s <= 0.68 && v >= 0.35 && v <= 0.95) ? 0.7 : 0;
-    
-    return Math.max(rgbScore, ycbcrScore, hsvScore);
-  };
-
-  const clusterSkinPixels = (skinPixels: Array<{x: number, y: number, intensity: number}>, width: number, height: number) => {
-    // Simple clustering algorithm
-    const clusters: Array<{
-      centerX: number;
-      centerY: number;
-      width: number;
-      height: number;
-      confidence: number;
-      pixels: Array<{x: number, y: number, intensity: number}>;
-    }> = [];
-    
-    if (skinPixels.length === 0) return clusters;
-    
-    // For simplicity, create one main cluster
-    const avgIntensity = skinPixels.reduce((sum, p) => sum + p.intensity, 0) / skinPixels.length;
-    const centerX = skinPixels.reduce((sum, p) => sum + p.x, 0) / skinPixels.length;
-    const centerY = skinPixels.reduce((sum, p) => sum + p.y, 0) / skinPixels.length;
-    
-    // Calculate bounds
-    const minX = Math.min(...skinPixels.map(p => p.x));
-    const maxX = Math.max(...skinPixels.map(p => p.x));
-    const minY = Math.min(...skinPixels.map(p => p.y));
-    const maxY = Math.max(...skinPixels.map(p => p.y));
-    
-    clusters.push({
-      centerX,
-      centerY,
-      width: maxX - minX,
-      height: maxY - minY,
-      confidence: Math.min(avgIntensity * (skinPixels.length / 200), 1),
-      pixels: skinPixels
-    });
-    
-    return clusters;
-  };
-
-  const detectFaceOrientation = (faceRegion: any, data: Uint8ClampedArray, width: number, height: number): FaceOrientation => {
-    const { centerX, centerY, pixels } = faceRegion;
-    
-    // Enhanced asymmetry analysis
-    const leftPixels = pixels.filter((p: any) => p.x < centerX - 20);
-    const rightPixels = pixels.filter((p: any) => p.x > centerX + 20);
-    const centerPixels = pixels.filter((p: any) => Math.abs(p.x - centerX) <= 20);
-    
-    const leftDensity = leftPixels.length;
-    const rightDensity = rightPixels.length;
-    const centerDensity = centerPixels.length;
-    
-    // Calculate intensity differences
-    const leftIntensity = leftPixels.reduce((sum: number, p: any) => sum + p.intensity, 0) / Math.max(leftPixels.length, 1);
-    const rightIntensity = rightPixels.reduce((sum: number, p: any) => sum + p.intensity, 0) / Math.max(rightPixels.length, 1);
-    
-    const densityRatio = Math.abs(leftDensity - rightDensity) / (leftDensity + rightDensity);
-    const intensityRatio = Math.abs(leftIntensity - rightIntensity) / (leftIntensity + rightIntensity);
-    
-    // Combined analysis for more stable detection
-    const asymmetryScore = (densityRatio + intensityRatio) / 2;
-    
-    if (asymmetryScore < 0.15 && centerDensity > Math.max(leftDensity, rightDensity) * 0.5) {
-      return 'straight';
-    } else if (asymmetryScore > 0.25) {
-      return leftDensity > rightDensity ? 'right' : 'left';
-    }
-    
-    return 'straight';
-  };
-
-  // Temporal smoothing state
-  const recentDetections = useRef<Array<{orientation: FaceOrientation, confidence: number, timestamp: number}>>([]);
-
-  const temporalSmoothing = (orientation: FaceOrientation, confidence: number) => {
-    const now = Date.now();
-    
-    // Add current detection
-    recentDetections.current.push({ orientation, confidence, timestamp: now });
-    
-    // Keep only recent detections (last 500ms)
-    recentDetections.current = recentDetections.current.filter(d => now - d.timestamp < 500);
-    
-    // Calculate weighted average
-    const weights = recentDetections.current.map(d => Math.exp(-(now - d.timestamp) / 200));
-    const totalWeight = weights.reduce((sum, w) => sum + w, 0);
-    
-    // Count orientations with recency weighting
-    const orientationScores = {
-      straight: 0,
-      left: 0,
-      right: 0,
-      none: 0
-    };
-    
-    recentDetections.current.forEach((d, i) => {
-      orientationScores[d.orientation] += weights[i] * d.confidence;
-    });
-    
-    // Find most confident orientation
-    const bestOrientation = Object.entries(orientationScores).reduce((a, b) => 
-      orientationScores[a[0] as FaceOrientation] > orientationScores[b[0] as FaceOrientation] ? a : b
-    )[0] as FaceOrientation;
-    
-    const smoothedConfidence = orientationScores[bestOrientation] / totalWeight;
-    
-    return {
-      orientation: bestOrientation,
-      confidence: Math.min(smoothedConfidence, 1)
-    };
-  };
-
-  const drawFaceDetection = (ctx: CanvasRenderingContext2D, centerX: number, centerY: number, width: number, height: number, orientation: FaceOrientation) => {
-    // Draw face bounding box
-    ctx.strokeStyle = orientation === 'straight' ? '#10b981' : '#3b82f6';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(
-      centerX - Math.max(width, height) / 2,
-      centerY - Math.max(width, height) / 2,
-      Math.max(width, height),
-      Math.max(width, height)
-    );
-    
-    // Draw orientation indicator
-    ctx.fillStyle = orientation === 'straight' ? '#10b981' : '#3b82f6';
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, 8, 0, 2 * Math.PI);
-    ctx.fill();
-    
-    // Draw direction arrow for non-straight orientations
-    if (orientation !== 'straight' && orientation !== 'none') {
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      
-      const arrowLength = 30;
-      const arrowX = orientation === 'left' ? centerX - arrowLength : centerX + arrowLength;
-      
-      ctx.moveTo(centerX, centerY);
-      ctx.lineTo(arrowX, centerY);
-      
-      // Arrow head
-      const headSize = 8;
-      const headX = orientation === 'left' ? arrowX + headSize : arrowX - headSize;
-      ctx.moveTo(arrowX, centerY);
-      ctx.lineTo(headX, centerY - headSize);
-      ctx.moveTo(arrowX, centerY);
-      ctx.lineTo(headX, centerY + headSize);
-      
-      ctx.stroke();
-    }
-  };
-
-  const isSkinColor = (r: number, g: number, b: number): boolean => {
-    // Simple skin color detection algorithm
-    const rg = r - g;
-    const rb = r - b;
-    const gb = g - b;
-    
-    return (
-      r > 95 && g > 40 && b > 20 &&
-      Math.max(r, Math.max(g, b)) - Math.min(r, Math.min(g, b)) > 15 &&
-      Math.abs(rg) > 15 && r > g && r > b
-    ) || (
-      r > 220 && g > 210 && b > 170 &&
-      Math.abs(rg) <= 15 && r > b && g > b
-    );
   };
 
   const resetDetection = () => {
@@ -392,14 +178,11 @@ const LivenessDetector = () => {
   };
 
   useEffect(() => {
-    initializeCamera();
+    initializeMediaPipe();
     
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
+      if (cameraRef.current) {
+        cameraRef.current.stop();
       }
     };
   }, []);
@@ -439,7 +222,7 @@ const LivenessDetector = () => {
                 <div className="flex flex-col items-center justify-center h-96 space-y-4">
                   <AlertCircle className="w-12 h-12 text-destructive" />
                   <p className="text-destructive text-center">{error}</p>
-                  <Button onClick={initializeCamera} variant="outline">
+                  <Button onClick={initializeMediaPipe} variant="outline">
                     Retry Camera Access
                   </Button>
                 </div>
@@ -454,6 +237,8 @@ const LivenessDetector = () => {
                   />
                   <canvas
                     ref={canvasRef}
+                    width={640}
+                    height={480}
                     className="w-full h-auto rounded-lg border border-border shadow-lg"
                   />
                   
@@ -526,7 +311,7 @@ const LivenessDetector = () => {
               <div className="space-y-2 max-h-64 overflow-y-auto">
                 {detectionHistory.slice(-10).reverse().map((detection, index) => (
                   <div 
-                    key={`${detection.timestamp.getTime()}-${index}`}
+                    key={`${detection.timestamp}-${index}`}
                     className="flex items-center justify-between p-2 rounded-md bg-muted/50 text-sm"
                   >
                     <div className="flex items-center gap-2">
