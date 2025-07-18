@@ -95,54 +95,57 @@ const LivenessDetector = () => {
         const leftEye = landmarks[0]; // Left eye
         const rightEye = landmarks[1]; // Right eye
         
-        // Calculate horizontal position of nose relative to eye center
-        const eyeCenter = (leftEye.x + rightEye.x) / 2;
-        const noseX = nose.x;
+        // Ensure all required landmarks exist
+        if (nose && leftEye && rightEye && nose.x !== undefined && leftEye.x !== undefined && rightEye.x !== undefined) {
+          // Calculate horizontal position of nose relative to eye center
+          const eyeCenter = (leftEye.x + rightEye.x) / 2;
+          const noseX = nose.x;
+          
+          // Determine orientation based on nose position relative to eye center
+          let orientation: FaceOrientation = 'straight';
+          const threshold = 0.02; // Sensitivity threshold
+          
+          if (noseX < eyeCenter - threshold) {
+            orientation = 'right'; // Person's right (our left when looking at them)
+          } else if (noseX > eyeCenter + threshold) {
+            orientation = 'left'; // Person's left (our right when looking at them)
+          }
+          
+          const detectionConfidence = (detection.score && detection.score[0]) ? detection.score[0] : 0;
         
-        // Determine orientation based on nose position relative to eye center
-        let orientation: FaceOrientation = 'straight';
-        const threshold = 0.02; // Sensitivity threshold
+          setCurrentOrientation(orientation);
+          setConfidence(detectionConfidence);
         
-        if (noseX < eyeCenter - threshold) {
-          orientation = 'right'; // Person's right (our left when looking at them)
-        } else if (noseX > eyeCenter + threshold) {
-          orientation = 'left'; // Person's left (our right when looking at them)
+          // Add to detection history
+          const newDetection: Detection = {
+            orientation,
+            confidence: detectionConfidence,
+            timestamp: Date.now()
+          };
+          
+          setDetectionHistory(prev => [...prev.slice(-9), newDetection]);
+          
+          // Draw face detection box
+          const bbox = detection.boundingBox;
+          if (bbox) {
+            ctx.strokeStyle = orientation === 'straight' ? '#10b981' : '#3b82f6';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(
+              bbox.xCenter * canvas.width - (bbox.width * canvas.width) / 2,
+              bbox.yCenter * canvas.height - (bbox.height * canvas.height) / 2,
+              bbox.width * canvas.width,
+              bbox.height * canvas.height
+            );
+          }
+          
+          // Draw landmarks
+          ctx.fillStyle = '#ef4444';
+          landmarks.forEach((landmark: any) => {
+            ctx.beginPath();
+            ctx.arc(landmark.x * canvas.width, landmark.y * canvas.height, 3, 0, 2 * Math.PI);
+            ctx.fill();
+          });
         }
-        
-        const detectionConfidence = detection.score[0] || 0;
-        
-        setCurrentOrientation(orientation);
-        setConfidence(detectionConfidence);
-        
-        // Add to detection history
-        const newDetection: Detection = {
-          orientation,
-          confidence: detectionConfidence,
-          timestamp: Date.now()
-        };
-        
-        setDetectionHistory(prev => [...prev.slice(-9), newDetection]);
-        
-        // Draw face detection box
-        const bbox = detection.boundingBox;
-        if (bbox) {
-          ctx.strokeStyle = orientation === 'straight' ? '#10b981' : '#3b82f6';
-          ctx.lineWidth = 3;
-          ctx.strokeRect(
-            bbox.xCenter * canvas.width - (bbox.width * canvas.width) / 2,
-            bbox.yCenter * canvas.height - (bbox.height * canvas.height) / 2,
-            bbox.width * canvas.width,
-            bbox.height * canvas.height
-          );
-        }
-        
-        // Draw landmarks
-        ctx.fillStyle = '#ef4444';
-        landmarks.forEach((landmark: any) => {
-          ctx.beginPath();
-          ctx.arc(landmark.x * canvas.width, landmark.y * canvas.height, 3, 0, 2 * Math.PI);
-          ctx.fill();
-        });
       }
     } else {
       setCurrentOrientation('none');
