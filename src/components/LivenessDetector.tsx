@@ -1,6 +1,5 @@
+
 import { useEffect, useRef, useState } from 'react';
-import { FaceDetection } from '@mediapipe/face_detection';
-import { Camera } from '@mediapipe/camera_utils';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -11,14 +10,14 @@ type FaceOrientation = 'straight' | 'left' | 'right' | 'none';
 interface Detection {
   orientation: FaceOrientation;
   confidence: number;
-  timestamp: number;
+  timestamp: Date;
 }
 
 const LivenessDetector = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const faceDetectionRef = useRef<FaceDetection | null>(null);
-  const cameraRef = useRef<Camera | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
   
   const [isInitialized, setIsInitialized] = useState(false);
   const [currentOrientation, setCurrentOrientation] = useState<FaceOrientation>('none');
@@ -27,130 +26,169 @@ const LivenessDetector = () => {
   const [detectionHistory, setDetectionHistory] = useState<Detection[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const initializeMediaPipe = async () => {
+  const initializeCamera = async () => {
     try {
       setError(null);
       
-      const faceDetection = new FaceDetection({
-        locateFile: (file) => {
-          return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`;
+      // Get user media
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          facingMode: 'user'
         }
       });
 
-      faceDetection.setOptions({
-        model: 'short',
-        minDetectionConfidence: 0.5,
-      });
-
-      faceDetection.onResults((results) => {
-        onResults(results);
-      });
-
-      faceDetectionRef.current = faceDetection;
-
       if (videoRef.current) {
-        const camera = new Camera(videoRef.current, {
-          onFrame: async () => {
-            if (faceDetectionRef.current && videoRef.current) {
-              await faceDetectionRef.current.send({ image: videoRef.current });
-            }
-          },
-          width: 640,
-          height: 480
-        });
-
-        cameraRef.current = camera;
-        await camera.start();
-        setIsInitialized(true);
-        setIsDetecting(true);
+        videoRef.current.srcObject = stream;
+        streamRef.current = stream;
+        
+        videoRef.current.onloadedmetadata = () => {
+          if (videoRef.current) {
+            videoRef.current.play();
+            setIsInitialized(true);
+            setIsDetecting(true);
+            startDetection();
+          }
+        };
       }
     } catch (err) {
-      console.error('Error initializing MediaPipe:', err);
-      setError('Failed to initialize camera and face detection. Please check your camera permissions.');
+      console.error('Error accessing camera:', err);
+      setError('Failed to access camera. Please check your camera permissions and try again.');
     }
   };
 
-  const onResults = (results: any) => {
-    if (!canvasRef.current) return;
-
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    // Clear canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    // Draw video frame
-    if (videoRef.current) {
-      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+  const startDetection = () => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
     }
 
-    if (results.detections && results.detections.length > 0) {
-      const detection = results.detections[0];
-      const landmarks = detection.landmarks;
-      
-      if (landmarks && landmarks.length >= 6) {
-        // Calculate face orientation based on key landmarks
-        const nose = landmarks[2]; // Nose tip
-        const leftEye = landmarks[0]; // Left eye
-        const rightEye = landmarks[1]; // Right eye
-        
-        // Ensure all required landmarks exist
-        if (nose && leftEye && rightEye && nose.x !== undefined && leftEye.x !== undefined && rightEye.x !== undefined) {
-          // Calculate horizontal position of nose relative to eye center
-          const eyeCenter = (leftEye.x + rightEye.x) / 2;
-          const noseX = nose.x;
-          
-          // Determine orientation based on nose position relative to eye center
-          let orientation: FaceOrientation = 'straight';
-          const threshold = 0.02; // Sensitivity threshold
-          
-          if (noseX < eyeCenter - threshold) {
-            orientation = 'right'; // Person's right (our left when looking at them)
-          } else if (noseX > eyeCenter + threshold) {
-            orientation = 'left'; // Person's left (our right when looking at them)
-          }
-          
-          const detectionConfidence = (detection.score && detection.score[0]) ? detection.score[0] : 0;
-        
-          setCurrentOrientation(orientation);
-          setConfidence(detectionConfidence);
-        
-          // Add to detection history
-          const newDetection: Detection = {
-            orientation,
-            confidence: detectionConfidence,
-            timestamp: Date.now()
-          };
-          
-          setDetectionHistory(prev => [...prev.slice(-9), newDetection]);
-          
-          // Draw face detection box
-          const bbox = detection.boundingBox;
-          if (bbox) {
-            ctx.strokeStyle = orientation === 'straight' ? '#10b981' : '#3b82f6';
-            ctx.lineWidth = 3;
-            ctx.strokeRect(
-              bbox.xCenter * canvas.width - (bbox.width * canvas.width) / 2,
-              bbox.yCenter * canvas.height - (bbox.height * canvas.height) / 2,
-              bbox.width * canvas.width,
-              bbox.height * canvas.height
-            );
-          }
-          
-          // Draw landmarks
-          ctx.fillStyle = '#ef4444';
-          landmarks.forEach((landmark: any) => {
-            ctx.beginPath();
-            ctx.arc(landmark.x * canvas.width, landmark.y * canvas.height, 3, 0, 2 * Math.PI);
-            ctx.fill();
-          });
-        }
-      }
-    } else {
+    intervalRef.current = setInterval(() => {
+      detectFace();
+    }, 100); // Detect every 100ms
+  };
+
+  const detectFace = async () => {
+    if (!videoRef.current || !canvasRef.current) return;
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    
+    if (!ctx || video.videoWidth === 0) return;
+
+    // Set canvas dimensions to match video
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    // Draw video frame to canvas
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Simple face detection using basic image processing
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const faceDetected = detectFaceInImageData(imageData, ctx);
+    
+    if (!faceDetected) {
       setCurrentOrientation('none');
       setConfidence(0);
     }
+  };
+
+  const detectFaceInImageData = (imageData: ImageData, ctx: CanvasRenderingContext2D): boolean => {
+    const data = imageData.data;
+    const width = imageData.width;
+    const height = imageData.height;
+    
+    // Simple face detection using skin color detection and edge detection
+    let faceRegions: Array<{x: number, y: number, width: number, height: number}> = [];
+    
+    // Scan for skin-colored regions (simplified)
+    const skinPixels: Array<{x: number, y: number}> = [];
+    
+    for (let y = 0; y < height; y += 4) {
+      for (let x = 0; x < width; x += 4) {
+        const index = (y * width + x) * 4;
+        const r = data[index];
+        const g = data[index + 1];
+        const b = data[index + 2];
+        
+        // Simple skin color detection
+        if (isSkinColor(r, g, b)) {
+          skinPixels.push({x, y});
+        }
+      }
+    }
+    
+    if (skinPixels.length > 100) { // Minimum threshold for face detection
+      // Find the center of mass of skin pixels
+      const centerX = skinPixels.reduce((sum, p) => sum + p.x, 0) / skinPixels.length;
+      const centerY = skinPixels.reduce((sum, p) => sum + p.y, 0) / skinPixels.length;
+      
+      // Estimate face orientation based on asymmetry
+      const leftSidePixels = skinPixels.filter(p => p.x < centerX).length;
+      const rightSidePixels = skinPixels.filter(p => p.x > centerX).length;
+      
+      const asymmetryRatio = Math.abs(leftSidePixels - rightSidePixels) / (leftSidePixels + rightSidePixels);
+      
+      let orientation: FaceOrientation = 'straight';
+      if (asymmetryRatio > 0.2) {
+        if (leftSidePixels > rightSidePixels) {
+          orientation = 'right'; // Face turned right
+        } else {
+          orientation = 'left'; // Face turned left
+        }
+      }
+      
+      const detectionConfidence = Math.min(skinPixels.length / 500, 1);
+      
+      setCurrentOrientation(orientation);
+      setConfidence(detectionConfidence);
+      
+      // Add to detection history
+      const newDetection: Detection = {
+        orientation,
+        confidence: detectionConfidence,
+        timestamp: new Date()
+      };
+      
+      setDetectionHistory(prev => [...prev.slice(-9), newDetection]);
+      
+      // Draw face detection indicator
+      ctx.strokeStyle = orientation === 'straight' ? '#10b981' : '#3b82f6';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(
+        centerX - 80,
+        centerY - 80,
+        160,
+        160
+      );
+      
+      // Draw center point
+      ctx.fillStyle = '#ef4444';
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, 5, 0, 2 * Math.PI);
+      ctx.fill();
+      
+      return true;
+    }
+    
+    return false;
+  };
+
+  const isSkinColor = (r: number, g: number, b: number): boolean => {
+    // Simple skin color detection algorithm
+    const rg = r - g;
+    const rb = r - b;
+    const gb = g - b;
+    
+    return (
+      r > 95 && g > 40 && b > 20 &&
+      Math.max(r, Math.max(g, b)) - Math.min(r, Math.min(g, b)) > 15 &&
+      Math.abs(rg) > 15 && r > g && r > b
+    ) || (
+      r > 220 && g > 210 && b > 170 &&
+      Math.abs(rg) <= 15 && r > b && g > b
+    );
   };
 
   const resetDetection = () => {
@@ -178,11 +216,14 @@ const LivenessDetector = () => {
   };
 
   useEffect(() => {
-    initializeMediaPipe();
+    initializeCamera();
     
     return () => {
-      if (cameraRef.current) {
-        cameraRef.current.stop();
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
       }
     };
   }, []);
@@ -222,7 +263,7 @@ const LivenessDetector = () => {
                 <div className="flex flex-col items-center justify-center h-96 space-y-4">
                   <AlertCircle className="w-12 h-12 text-destructive" />
                   <p className="text-destructive text-center">{error}</p>
-                  <Button onClick={initializeMediaPipe} variant="outline">
+                  <Button onClick={initializeCamera} variant="outline">
                     Retry Camera Access
                   </Button>
                 </div>
@@ -237,8 +278,6 @@ const LivenessDetector = () => {
                   />
                   <canvas
                     ref={canvasRef}
-                    width={640}
-                    height={480}
                     className="w-full h-auto rounded-lg border border-border shadow-lg"
                   />
                   
@@ -311,7 +350,7 @@ const LivenessDetector = () => {
               <div className="space-y-2 max-h-64 overflow-y-auto">
                 {detectionHistory.slice(-10).reverse().map((detection, index) => (
                   <div 
-                    key={`${detection.timestamp}-${index}`}
+                    key={`${detection.timestamp.getTime()}-${index}`}
                     className="flex items-center justify-between p-2 rounded-md bg-muted/50 text-sm"
                   >
                     <div className="flex items-center gap-2">
